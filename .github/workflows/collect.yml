@@ -1,0 +1,82 @@
+name: collect
+
+on:
+  schedule:
+    # cron은 정시에 정확히 돌지 않는다 (수 분~수십 분 지연, 드물게 스킵).
+    # 정시 혼잡을 피해 매시 10분으로 어긋나게 잡는다.
+    # 수집기는 시각이 아니라 마지막 저장 봉을 기준으로 동작하므로,
+    # 실행이 밀리거나 스킵돼도 다음 실행이 빈 구간을 메운다.
+    - cron: "10 * * * *"
+  workflow_dispatch:
+    inputs:
+      unit:
+        description: "분봉 단위 (1, 3, 5, 15, 30, 60, 240)"
+        default: "1"
+      markets:
+        description: "쉼표로 구분한 마켓 코드 (비우면 KRW 마켓 전체)"
+        default: ""
+      limit:
+        description: "처리할 마켓 수 상한 (0=제한 없음)"
+        default: "0"
+
+# 데이터 커밋에 필요.
+permissions:
+  contents: write
+
+# 이전 실행과 겹치면 push가 충돌한다. 취소하지 말고 직렬화한다.
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Collect candles
+        env:
+          UNIT: ${{ inputs.unit || '1' }}
+          MARKETS: ${{ inputs.markets || '' }}
+          LIMIT: ${{ inputs.limit || '0' }}
+        run: |
+          uv run xrypto collect \
+            --unit "$UNIT" \
+            --markets "$MARKETS" \
+            --limit "$LIMIT" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit data
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ ! -d data ] || [ -z "$(git status --porcelain data)" ]; then
+            echo "no new data" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git add data
+          git commit -m "data: collect candles ($(date -u '+%Y-%m-%dT%H:%MZ'))"
+
+          # concurrency 그룹이 있어도 수동 실행과 겹칠 수 있으니 재시도한다.
+          for attempt in 1 2 3 4; do
+            if git push; then
+              exit 0
+            fi
+            echo "push failed (attempt $attempt), rebasing"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+            sleep $((2 ** attempt))
+          done
+          echo "push failed after retries" >&2
+          exit 1
