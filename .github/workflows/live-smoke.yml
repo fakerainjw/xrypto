@@ -1,0 +1,40 @@
+name: live-smoke
+
+# 실제 업비트 API를 때려 보는 검증. 개발 샌드박스는 egress 정책 때문에
+# upbit.com에 나갈 수 없으므로, 러너에서 수동으로 돌려 확인한다.
+# 러너는 해외 IP라 엔드포인트 폴백이 실제로 도는지도 여기서 드러난다.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Live smoke test
+        run: uv run python scripts/live_smoke.py | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw responses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upbit-fixtures
+          path: fixtures/
+          if-no-files-found: warn

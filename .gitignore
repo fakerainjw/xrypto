@@ -7,3 +7,6 @@ __pycache__/
 dist/
 build/
 .env
+
+# live_smoke.py가 덤프하는 원본 응답 (필요할 때만 골라서 커밋)
+fixtures/
